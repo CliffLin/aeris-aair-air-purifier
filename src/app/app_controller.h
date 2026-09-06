@@ -52,7 +52,12 @@ private:
     uint8_t q_head_;
     uint8_t q_tail_;
 
+    void tickSerialProvision();
+
     bool setup_mode_;
+    bool setup_web_started_;
+    char serial_prov_buf_[512];
+    size_t serial_prov_len_;
     bool display_reinit_pending_;
     uint32_t display_reinit_at_ms_;
     int last_applied_fan_;

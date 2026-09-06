@@ -1,5 +1,7 @@
 #include "app_controller.h"
 
+#include "../util/topic_validation.h"
+
 namespace {
 const int PIN_FAN = D0;
 const int PIN_SENSOR_TX = A6;
@@ -28,6 +30,8 @@ AppController::AppController()
       q_head_(0),
       q_tail_(0),
       setup_mode_(false),
+      setup_web_started_(false),
+      serial_prov_len_(0),
       display_reinit_pending_(false),
       display_reinit_at_ms_(0),
       last_applied_fan_(-1),
@@ -82,6 +86,9 @@ void AppController::init() {
 void AppController::tick() {
     uint32_t now_ms = millis();
 
+    if (setup_mode_) {
+        tickSerialProvision();
+    }
     tickDisplay(now_ms);
     tickInput(now_ms);
     tickSensor(now_ms);
@@ -138,12 +145,137 @@ void AppController::tickSensor(uint32_t now_ms) {
     }
 }
 
+// Setup-mode serial provisioning — the deterministic fallback when the SoftAP
+// TCP stack is dead. One line, tab-separated:
+//   PROV\t<ssid>\t<wifi_pass>\t<mqtt_host>\t<mqtt_port>\t<mqtt_user>\t<mqtt_pass>\t<topic_root>\t<device_id>\n
+// Also answers "IP?" with the current local IP. Listening mode's own console
+// reads the same USB serial and would eat part of the line, so exit it first
+// (system `x`, not `w` — `w` starts the Wi-Fi wizard) and refuse to parse until
+// it has actually gone.
+void AppController::tickSerialProvision() {
+    if (WiFi.listening()) {
+        // Whatever we half-read before the console took the port would otherwise
+        // be prepended to the first line we accept after it lets go.
+        serial_prov_len_ = 0;
+        return;
+    }
+
+    while (Serial.available() > 0) {
+        char c = static_cast<char>(Serial.read());
+        if (c == '\r') {
+            continue;
+        }
+        if (c != '\n') {
+            if (serial_prov_len_ < sizeof(serial_prov_buf_) - 1) {
+                serial_prov_buf_[serial_prov_len_++] = c;
+            }
+            continue;
+        }
+        serial_prov_buf_[serial_prov_len_] = '\0';
+        serial_prov_len_ = 0;
+
+        if (strcmp(serial_prov_buf_, "IP?") == 0) {
+            Serial.println(WiFi.localIP());
+            continue;
+        }
+        if (strncmp(serial_prov_buf_, "PROV\t", 5) != 0) {
+            continue;
+        }
+
+        char* fields[8] = {nullptr};
+        int n = 0;
+        char* p = serial_prov_buf_ + 5;
+        fields[n++] = p;
+        while (n < 8 && (p = strchr(p, '\t')) != nullptr) {
+            *p++ = '\0';
+            fields[n++] = p;
+        }
+        if (n < 8) {
+            Serial.println("PROV ERR fields");
+            continue;
+        }
+        char* end = nullptr;
+        long port = strtol(fields[3], &end, 10);
+        if (end == nullptr || *end != '\0' || port < 1 || port > 65535) {
+            Serial.println("PROV ERR port");
+            continue;
+        }
+
+        if (fields[0][0] == '\0') {
+            Serial.println("PROV ERR ssid");
+            continue;
+        }
+        // An empty broker host leaves mqtt_enabled set but MqttClient disabled:
+        // the same provisions-cleanly-never-connects unit the checks exist for.
+        if (fields[2][0] == '\0') {
+            Serial.println("PROV ERR host");
+            continue;
+        }
+        // Silently truncating a passphrase or a broker host produces a unit that
+        // provisions cleanly and then never connects, so refuse instead.
+        const size_t limits[8] = {
+            sizeof(settings_.wifi_ssid), sizeof(settings_.wifi_pass),
+            sizeof(settings_.mqtt_host), 0,
+            sizeof(settings_.mqtt_user), sizeof(settings_.mqtt_pass),
+            sizeof(settings_.mqtt_topic_root), sizeof(settings_.device_id),
+        };
+        bool too_long = false;
+        for (int f = 0; f < 8; ++f) {
+            if (limits[f] != 0 && strlen(fields[f]) >= limits[f]) {
+                too_long = true;
+            }
+        }
+        if (too_long) {
+            Serial.println("PROV ERR too long");
+            continue;
+        }
+        // sanitize() rewrites these rather than failing, so an unsafe topic root
+        // would answer PROV OK and put the unit on the default root instead.
+        if (!isDeviceIdTopicSafe(fields[7], sizeof(settings_.device_id) - 1)) {
+            Serial.println("PROV ERR device_id");
+            continue;
+        }
+        if (!isTopicRootSafe(fields[6], sizeof(settings_.mqtt_topic_root))) {
+            Serial.println("PROV ERR topic_root");
+            continue;
+        }
+
+        snprintf(settings_.wifi_ssid, sizeof(settings_.wifi_ssid), "%s", fields[0]);
+        snprintf(settings_.wifi_pass, sizeof(settings_.wifi_pass), "%s", fields[1]);
+        snprintf(settings_.mqtt_host, sizeof(settings_.mqtt_host), "%s", fields[2]);
+        settings_.mqtt_port = static_cast<uint16_t>(port);
+        snprintf(settings_.mqtt_user, sizeof(settings_.mqtt_user), "%s", fields[4]);
+        snprintf(settings_.mqtt_pass, sizeof(settings_.mqtt_pass), "%s", fields[5]);
+        snprintf(settings_.mqtt_topic_root, sizeof(settings_.mqtt_topic_root), "%s", fields[6]);
+        snprintf(settings_.device_id, sizeof(settings_.device_id), "%s", fields[7]);
+        settings_.mqtt_enabled = 1;
+
+        settings_store_.sanitize(settings_);
+        if (!settings_store_.save(settings_)) {
+            Serial.println("PROV ERR save");
+            continue;
+        }
+        Serial.println("PROV OK rebooting");
+        delay(200);
+        System.reset();
+    }
+}
+
 void AppController::tickNetwork(uint32_t now_ms) {
     bool prev_wifi_enabled = state_.wifi_enabled;
     bool prev_wifi_ready = state_.wifi_ready;
     bool prev_wifi_ip_visible = state_.wifi_ip_visible;
 
-    if (state_.wifi_enabled && !WiFi.listening()) {
+    if (state_.wifi_enabled) {
+        // The system SoftAP HTTP server can come up with its TCP listeners dead
+        // while DHCP/ICMP work, so the config API is served from our own
+        // TCPServer instead. It cannot run on the SoftAP interface: both
+        // TCPServer::begin() and available() return early unless
+        // Network.ready(), which listening mode never satisfies. Station only.
+        if (setup_mode_ && !setup_web_started_ && state_.wifi_ready) {
+            web_.begin();
+            setup_web_started_ = true;
+        }
         web_.tick();
     }
 
