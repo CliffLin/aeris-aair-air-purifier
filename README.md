@@ -62,6 +62,8 @@ MQTT command topics:
 - `aeris/v2/<device_id>/cmd/fan_percent`
 - `aeris/v2/<device_id>/cmd/lights`
 - `aeris/v2/<device_id>/cmd/screen_light`
+- `aeris/v2/<device_id>/cmd/ring`, `cmd/ring_brightness`, `cmd/ring_blink`, `cmd/status_led`
+- `aeris/v2/<device_id>/cmd/filter_days`
 - MQTT state/health topics for fan, PM, uptime, reconnect counters, parse errors, queue drop counters.
 
 ### Reliability and Diagnostics

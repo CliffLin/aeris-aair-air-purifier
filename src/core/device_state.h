@@ -7,6 +7,11 @@ struct DeviceState {
     int saved_fan_percent;
     bool lights_on;
     bool screen_light_on;
+    uint8_t ring_pattern;
+    uint8_t ring_brightness;  // PWM level 0..4
+    uint16_t ring_blink_ms;   // half period; 0 = solid
+    bool status_led_on;
+    uint32_t filter_minutes;  // wall-clock countdown, stock semantics
 
     int pm25_raw;
     int pm10_raw;
@@ -38,6 +43,11 @@ inline void initDeviceState(DeviceState& state, uint32_t now_ms) {
     state.saved_fan_percent = 25;
     state.lights_on = true;
     state.screen_light_on = true;
+    state.ring_pattern = 0;
+    state.ring_brightness = 4;
+    state.ring_blink_ms = 0;
+    state.status_led_on = false;
+    state.filter_minutes = 0;
     state.pm25_raw = 0;
     state.pm10_raw = 0;
     state.pm25_smooth = 0;

@@ -175,6 +175,21 @@ void MqttClient::subscribeTopics() {
 
     snprintf(topic, sizeof(topic), "%s/cmd/screen_light", root_);
     client_->subscribe(topic);
+
+    snprintf(topic, sizeof(topic), "%s/cmd/ring", root_);
+    client_->subscribe(topic);
+
+    snprintf(topic, sizeof(topic), "%s/cmd/ring_brightness", root_);
+    client_->subscribe(topic);
+
+    snprintf(topic, sizeof(topic), "%s/cmd/ring_blink", root_);
+    client_->subscribe(topic);
+
+    snprintf(topic, sizeof(topic), "%s/cmd/status_led", root_);
+    client_->subscribe(topic);
+
+    snprintf(topic, sizeof(topic), "%s/cmd/filter_days", root_);
+    client_->subscribe(topic);
 }
 
 void MqttClient::onMessage(char* topic, uint8_t* payload, unsigned int length) {
@@ -201,9 +216,13 @@ bool MqttClient::parseCommand(const char* topic, const char* payload, Command& o
     char fan_topic[128];
     char lights_topic[128];
     char screen_light_topic[128];
+    char ring_topic[128];
+    char status_led_topic[128];
     snprintf(fan_topic, sizeof(fan_topic), "%s/cmd/fan_percent", root_);
     snprintf(lights_topic, sizeof(lights_topic), "%s/cmd/lights", root_);
     snprintf(screen_light_topic, sizeof(screen_light_topic), "%s/cmd/screen_light", root_);
+    snprintf(ring_topic, sizeof(ring_topic), "%s/cmd/ring", root_);
+    snprintf(status_led_topic, sizeof(status_led_topic), "%s/cmd/status_led", root_);
 
     out.source = CommandSource::Mqtt;
     out.value = 0;
@@ -224,6 +243,57 @@ bool MqttClient::parseCommand(const char* topic, const char* payload, Command& o
         }
         out.type = CommandType::SetLights;
         out.value = lights;
+        return true;
+    }
+    if (strcmp(topic, ring_topic) == 0) {
+        int pattern = 0;
+        if (!parseIntStrict(payload, 0, 255, pattern)) {
+            return false;
+        }
+        out.type = CommandType::SetRing;
+        out.value = pattern;
+        return true;
+    }
+    {
+        char t[128];
+        snprintf(t, sizeof(t), "%s/cmd/ring_brightness", root_);
+        if (strcmp(topic, t) == 0) {
+            int pct = 0;
+            if (!parseIntStrict(payload, 0, 100, pct)) {
+                return false;
+            }
+            out.type = CommandType::SetRingBrightness;
+            out.value = pct;
+            return true;
+        }
+        snprintf(t, sizeof(t), "%s/cmd/ring_blink", root_);
+        if (strcmp(topic, t) == 0) {
+            int ms = 0;
+            if (!parseIntStrict(payload, 0, 10000, ms)) {
+                return false;
+            }
+            out.type = CommandType::SetRingBlink;
+            out.value = ms;
+            return true;
+        }
+        snprintf(t, sizeof(t), "%s/cmd/filter_days", root_);
+        if (strcmp(topic, t) == 0) {
+            int days = 0;
+            if (!parseIntStrict(payload, 0, 3650, days)) {
+                return false;
+            }
+            out.type = CommandType::SetFilterDays;
+            out.value = days;
+            return true;
+        }
+    }
+    if (strcmp(topic, status_led_topic) == 0) {
+        int led = 0;
+        if (!parseIntStrict(payload, 0, 1, led)) {
+            return false;
+        }
+        out.type = CommandType::SetStatusLed;
+        out.value = led;
         return true;
     }
     if (strcmp(topic, screen_light_topic) == 0) {

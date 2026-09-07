@@ -9,6 +9,7 @@
 #include "../drivers/button_driver.h"
 #include "../drivers/display_driver.h"
 #include "../drivers/fan_driver.h"
+#include "../drivers/key_light_driver.h"
 #include "../drivers/sensor_driver.h"
 #include "../net/mqtt_client.h"
 #include "../net/web_config_server.h"
@@ -38,7 +39,10 @@ private:
     FanDriver fan_;
     DisplayDriver display_;
     ButtonDriver buttons_;
+    KeyLightDriver key_lights_;
     SensorDriver sensor_;
+
+    Timer key_light_timer_;
 
     WifiManager wifi_;
     MqttClient mqtt_;
@@ -53,6 +57,10 @@ private:
     uint8_t q_tail_;
 
     void tickSerialProvision();
+    void keyLightTimerTick();
+    void loadFilterState();
+    void saveFilterState();
+    void tickFilter(uint32_t now_ms);
 
     bool setup_mode_;
     bool setup_web_started_;
@@ -62,7 +70,9 @@ private:
     uint32_t display_reinit_at_ms_;
     int last_applied_fan_;
     bool last_applied_lights_;
+    bool last_applied_status_led_;
     bool force_apply_lights_;
+    uint32_t last_filter_decrement_ms_;
     uint32_t last_report_ms_;
     uint32_t last_health_publish_ms_;
     uint32_t last_sensor_sample_ms_;

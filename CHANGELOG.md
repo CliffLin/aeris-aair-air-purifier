@@ -2,6 +2,20 @@
 
 All notable changes to this project are documented in this file.
 
+## [Unreleased]
+
+### Board
+
+- `KeyLightDriver` clocks the shift register behind `D5`/`D6`/`D7` deterministically
+  (all-off at boot after the stock `A4` handshake) with software-PWM dimming and a blink
+  gate. The register drives the four key lights; the ring glow is bleed from them.
+  `cmd/ring`, `cmd/ring_brightness`, `cmd/ring_blink` and `cmd/status_led` are mirrored
+  under `state/`.
+- The publish queue holds a full state burst plus a health burst (24 slots), so
+  `sensor/filter_minutes` is no longer dropped when both publish in the same loop.
+- The filter countdown decrements and persists every 10 min instead of hourly, so a
+  restart forfeits at most 10 min of filter life.
+
 ## [v1.0.0] - 2026-02-28
 
 ### Release Scope

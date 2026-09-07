@@ -27,7 +27,9 @@ private:
         char payload[24];
     };
 
-    static const uint8_t kQueueSize = 10;
+    // A state publish enqueues 10 topics at once and a health publish 8; the
+    // drain is one message per 25 ms, so this only has to absorb a burst.
+    static const uint8_t kQueueSize = 24;
 
     MQTT* client_;
     SettingsV2 settings_;

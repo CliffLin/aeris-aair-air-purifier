@@ -7,17 +7,29 @@ Root: `aeris/v2/<device_id>`
 - `aeris/v2/<device_id>/cmd/fan_percent` payload `0..100`
 - `aeris/v2/<device_id>/cmd/lights` payload `0|1`
 - `aeris/v2/<device_id>/cmd/screen_light` payload `0|1` (A1 TFT backlight)
+- `aeris/v2/<device_id>/cmd/ring` payload `0..255` key-light pattern byte (`0x03` power, `0x0C` AirQ, `0x30` down, `0xC0` up)
+- `aeris/v2/<device_id>/cmd/ring_brightness` payload `0..100` percent, quantised to 5 duty levels; `state/ring_brightness` reports the quantised percent (`0`, `25`, `50`, `75` or `100`)
+- `aeris/v2/<device_id>/cmd/ring_blink` payload half period in ms, `0` = solid
+- `aeris/v2/<device_id>/cmd/status_led` payload `0|1`
+- `aeris/v2/<device_id>/cmd/filter_days` payload days of filter life remaining
 
 ### State Topics
 - `aeris/v2/<device_id>/state/fan_percent`
 - `aeris/v2/<device_id>/state/fan_pwm`
 - `aeris/v2/<device_id>/state/lights`
+- `aeris/v2/<device_id>/state/ring`
+- `aeris/v2/<device_id>/state/ring_brightness`
+- `aeris/v2/<device_id>/state/ring_blink`
+- `aeris/v2/<device_id>/state/status_led`
 - `aeris/v2/<device_id>/sensor/pm25`
 - `aeris/v2/<device_id>/sensor/pm10`
+- `aeris/v2/<device_id>/sensor/filter_minutes`
 - `aeris/v2/<device_id>/health/uptime_s`
 - `aeris/v2/<device_id>/health/wifi_reconnect_count`
 - `aeris/v2/<device_id>/health/mqtt_reconnect_count`
+- `aeris/v2/<device_id>/health/mqtt_publish_drop_count`
 - `aeris/v2/<device_id>/health/sensor_parse_errors`
+- `aeris/v2/<device_id>/health/command_drop_{button,mqtt,web}_count`
 
 Payloads are primitive strings.
 

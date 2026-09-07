@@ -6,7 +6,12 @@ namespace {
 const int PIN_FAN = D0;
 const int PIN_SENSOR_TX = A6;
 const int PIN_DISP_BL = A1;
-const int PIN_DISP_AUX_EN = D6;
+// Ring/indicator shift register (stock protocol): D5 data, D6 clock, D7 latch,
+// A4 boot handshake. D6 was previously mislabeled as a display aux line.
+const int PIN_RING_DATA = D5;
+const int PIN_RING_CLK = D6;
+const int PIN_RING_LATCH = D7;
+const int PIN_RING_HANDSHAKE = A4;
 const int BTN_UP = D1;
 const int BTN_DOWN = D2;
 const int BTN_EXTRA = D3;
@@ -19,13 +24,28 @@ const int TFT_RST = -1;
 const uint32_t kReportIntervalMs = 5000;
 const uint32_t kHealthPublishIntervalMs = 30000;
 const uint32_t kDisplayReinitDelayMs = 2500;
+
+// Filter countdown, stock semantics: wall-clock. Decremented and persisted
+// every 10 min so a restart forfeits at most that much; the emulated EEPROM
+// behind the settings block absorbs the write rate for decades.
+const int kEepromAddrFilter = 512;
+const uint32_t kFilterMagic = 0x46494C54UL;  // 'FILT'
+const uint32_t kFilterTickMinutes = 10;
+const uint32_t kFilterTickMs = kFilterTickMinutes * 60UL * 1000UL;
+
+struct FilterRecord {
+    uint32_t magic;
+    uint32_t minutes;
+};
 }  // namespace
 
 AppController::AppController()
     : fan_(PIN_FAN),
       display_(TFT_CS, TFT_DC, TFT_RST, PIN_DISP_BL),
       buttons_(BTN_UP, BTN_DOWN, BTN_EXTRA, BTN_POWER),
+      key_lights_(PIN_RING_DATA, PIN_RING_CLK, PIN_RING_LATCH, PIN_RING_HANDSHAKE),
       sensor_(PIN_SENSOR_TX),
+      key_light_timer_(1, &AppController::keyLightTimerTick, *this),
       web_(80),
       q_head_(0),
       q_tail_(0),
@@ -36,7 +56,9 @@ AppController::AppController()
       display_reinit_at_ms_(0),
       last_applied_fan_(-1),
       last_applied_lights_(false),
+      last_applied_status_led_(false),
       force_apply_lights_(false),
+      last_filter_decrement_ms_(0),
       last_report_ms_(0),
       last_health_publish_ms_(0),
       last_sensor_sample_ms_(0),
@@ -45,12 +67,14 @@ AppController::AppController()
 void AppController::init() {
     Serial.begin(9600);
     RGB.control(true);
-    // Keep this legacy line deterministic before TFT init; floating here can cause white screen on assembled units.
-    pinMode(PIN_DISP_AUX_EN, OUTPUT);
-    digitalWrite(PIN_DISP_AUX_EN, LOW);
+    // Bring the ring register up deterministically before TFT init; unclocked
+    // it free-runs with random power-up contents (constant white glow).
+    key_lights_.init();
+    key_light_timer_.start();
 
     initDeviceState(state_, millis());
     settings_store_.loadOrInitialize(settings_);
+    loadFilterState();
 
     fan_.init();
     display_.init();
@@ -73,7 +97,7 @@ void AppController::init() {
         display_.renderSetupScreen(wifi_.softApSsid(), "192.168.0.1");
     } else {
         setup_mode_ = false;
-        RGB.color(255, 100, 0);
+        RGB.color(0, 0, 0);
         display_.setLights(true);
         wifi_.beginNormalMode(settings_);
         web_.begin();
@@ -95,6 +119,7 @@ void AppController::tick() {
     tickNetwork(now_ms);
     tickReport(now_ms);
     tickHealthPublish(now_ms);
+    tickFilter(now_ms);
 
     if (state_.dirty_publish) {
         queueStatePublish();
@@ -261,6 +286,36 @@ void AppController::tickSerialProvision() {
     }
 }
 
+void AppController::keyLightTimerTick() {
+    key_lights_.tick();
+}
+
+void AppController::loadFilterState() {
+    FilterRecord rec;
+    EEPROM.get(kEepromAddrFilter, rec);
+    state_.filter_minutes = (rec.magic == kFilterMagic) ? rec.minutes : 0;
+}
+
+void AppController::saveFilterState() {
+    FilterRecord rec = {kFilterMagic, state_.filter_minutes};
+    EEPROM.put(kEepromAddrFilter, rec);
+}
+
+void AppController::tickFilter(uint32_t now_ms) {
+    if (now_ms - last_filter_decrement_ms_ < kFilterTickMs) {
+        return;
+    }
+    last_filter_decrement_ms_ = now_ms;
+    if (state_.filter_minutes == 0) {
+        return;
+    }
+    state_.filter_minutes = (state_.filter_minutes > kFilterTickMinutes)
+                                ? state_.filter_minutes - kFilterTickMinutes
+                                : 0;
+    saveFilterState();
+    state_.dirty_publish = true;
+}
+
 void AppController::tickNetwork(uint32_t now_ms) {
     bool prev_wifi_enabled = state_.wifi_enabled;
     bool prev_wifi_ready = state_.wifi_ready;
@@ -424,6 +479,33 @@ void AppController::processCommands() {
 }
 
 void AppController::applyCommand(const Command& cmd) {
+    if (cmd.type == CommandType::SetRing) {
+        state_.ring_pattern = static_cast<uint8_t>(cmd.value);
+        state_.dirty_publish = true;
+        return;
+    }
+    if (cmd.type == CommandType::SetRingBrightness) {
+        // 0-100% mapped onto the 5 PWM duty levels.
+        state_.ring_brightness = static_cast<uint8_t>((cmd.value * 4 + 50) / 100);
+        state_.dirty_publish = true;
+        return;
+    }
+    if (cmd.type == CommandType::SetRingBlink) {
+        state_.ring_blink_ms = static_cast<uint16_t>(cmd.value);
+        state_.dirty_publish = true;
+        return;
+    }
+    if (cmd.type == CommandType::SetFilterDays) {
+        state_.filter_minutes = static_cast<uint32_t>(cmd.value) * 1440UL;
+        saveFilterState();
+        state_.dirty_publish = true;
+        return;
+    }
+    if (cmd.type == CommandType::SetStatusLed) {
+        state_.status_led_on = (cmd.value != 0);
+        state_.dirty_publish = true;
+        return;
+    }
     if (cmd.type == CommandType::SetScreenLight) {
         bool on = (cmd.value != 0);
         display_.setScreenLight(on);
@@ -483,6 +565,15 @@ void AppController::applyOutputs() {
         force_apply_lights_ = false;
     }
 
+    key_lights_.set_pattern(state_.ring_pattern);
+    key_lights_.set_brightness(state_.ring_brightness);
+    key_lights_.set_blink_ms(state_.ring_blink_ms);
+
+    if (!setup_mode_ && state_.status_led_on != last_applied_status_led_) {
+        RGB.color(state_.status_led_on ? 255 : 0, state_.status_led_on ? 100 : 0, 0);
+        last_applied_status_led_ = state_.status_led_on;
+    }
+
     if (state_.dirty_display) {
         if (setup_mode_ || (state_.wifi_enabled && WiFi.listening())) {
             display_.renderSetupScreen(wifi_.softApSsid(), "192.168.0.1");
@@ -499,6 +590,11 @@ void AppController::queueStatePublish() {
     mqtt_.enqueueStatePublish("state/fan_percent", state_.fan_percent);
     mqtt_.enqueueStatePublish("state/fan_pwm", fan_pwm);
     mqtt_.enqueueStatePublish("state/lights", state_.lights_on ? 1 : 0);
+    mqtt_.enqueueStatePublish("state/ring", state_.ring_pattern);
+    mqtt_.enqueueStatePublish("state/ring_brightness", state_.ring_brightness * 25);
+    mqtt_.enqueueStatePublish("state/ring_blink", state_.ring_blink_ms);
+    mqtt_.enqueueStatePublish("state/status_led", state_.status_led_on ? 1 : 0);
     mqtt_.enqueueStatePublish("sensor/pm25", state_.pm25_smooth);
     mqtt_.enqueueStatePublish("sensor/pm10", state_.pm10_smooth);
+    mqtt_.enqueueStatePublish("sensor/filter_minutes", state_.filter_minutes);
 }
